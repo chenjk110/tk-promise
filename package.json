@@ -1,7 +1,7 @@
 {
     "name": "tk-promise",
-    "version": "0.1.0",
-    "description": "",
+    "version": "0.1.1",
+    "description": "A promise library that implements Promise A+ standard",
     "main": "dist/index.min.js",
     "types": "dist/index.d.ts",
     "scripts": {
@@ -9,7 +9,10 @@
         "minify": "uglifyjs --compress --mangle --output dist/index.min.js dist/index.js ",
         "build": "rm -rf dist && tsc && npm run minify"
     },
-    "keywords": [],
+    "keywords": [
+        "promise",
+        "promise a+"
+    ],
     "repository": {
         "type": "git",
         "url": "git@github.com:chenjk110/tk-promise.git"

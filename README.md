@@ -1,5 +1,5 @@
 # TKPromise
-- `version: 0.1.0`
+- `version: 0.1.1`
 - `update: 2020.4`
 
 A promise library that implements Promise A+ standard

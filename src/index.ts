@@ -56,13 +56,14 @@ function executeCbChains(
     const res = safeExecute(callback, result, target)
 
     if (typeof res === 'undefined') {
-        return
+        return executeCbChains(target, isResolved, target['value'], chains.slice(1))
     }
 
     if (res instanceof TKPromise) {
         res['cbChains'] = res['cbChains'].concat(target['cbChains'].slice(1))
-        return setTimeout(() =>
-            executeCbChains(target, isResolved, target['value'], chains.slice(1)),
+        return setTimeout(
+            () => executeCbChains(target, isResolved, target['value'], chains.slice(1)),
+            0,
         )
     }
 

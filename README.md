@@ -1,10 +1,12 @@
 # TKPromise
-- `version: 0.1.3`
-- `update: 2020.4`
 
-A promise library that implements Promise A+ standard
+-   `version: 0.2.0`
+-   `update: 2020.4`
+
+A promise library that implements Promise A+ standard and ES standard.
 
 Reference: [Promise A+](https://promisesaplus.com/)
+Reference: [ECMA-262](https://www.ecma-international.org/publications/standards/Ecma-262.htm)
 
 ```ts
 type OnFulfilled = (result?: any) => any
@@ -36,6 +38,10 @@ TKPromise.resolve(value?: any): TKPromise
 TKPromise.reject(value?: any): TKPromise
 ```
 
+```ts
+TKPromise.allSettled(promises: TKPromise[]): TKPromise
+```
+
 ## 3. Prototype Methods
 
 ```ts
@@ -44,6 +50,10 @@ TKPromise.reject(value?: any): TKPromise
 
 ```ts
 .catch(onRejected: OnRejected): TKPromise
+```
+
+```ts
+.finally(onFinally: (res?: any) => void): void
 ```
 
 ## Examples
@@ -86,6 +96,8 @@ TKPromise.reject(2).catch((res) => {
 ```
 
 ```js
+/* then, catch */
+
 const p = new TKPromise((resolve, reject) => {
     setTimeout(() => {
         resolve('Hello World')
@@ -109,4 +121,35 @@ p.then((res) => {
     .catch((err) => {
         console.log(err) // 'Boom!!!'
     })
+```
+
+```js
+/* allSettled */
+
+TKPromise.allSettled([
+    TKPromise.resolve(1),
+    TKPromise.resolve(2),
+    TKPromise.reject(3),
+]).then((result) => {
+    console.log(result) // [1,2, 3]
+})
+```
+
+```js
+/* finally */
+new TKPromise((resolve, reject) => {
+    setTimeout(() => {
+        resolve(1)
+    }, 1000)
+}).then((res) => {
+    console.log(res) // 1
+}).then((res) => {
+    console.log(res) // Promise<resolved:undefined>
+    return Promise.reject(2)
+}).catch(err => {
+    console.log(err) // 2
+}).finally(() => {
+    console.log('done!')
+})
+
 ```

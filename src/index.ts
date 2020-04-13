@@ -1,5 +1,6 @@
 type OnFulfilled = (result?: any) => any
 type OnRejected = (result?: any) => any
+type OnFinally = (result?: any) => void
 type ExecutorFn = (resolve: OnFulfilled, reject: OnRejected) => void
 type CbMatch = Array<undefined | Function>
 type CbChains = Array<CbMatch>
@@ -36,7 +37,16 @@ function executeCbChains(
     result: any,
     chains: CbChains,
 ): any {
-    if (!chains.length) return
+    // end of chains
+    if (!chains.length) {
+        // run finally callback
+        if (typeof target['cbFinally'] === 'function') {
+            return target['cbFinally'](target['value'])
+        }
+        // esle return directly
+        return
+    }
+
     const [onFulfilld, onRejected] = chains[0]
 
     let callback
@@ -55,34 +65,31 @@ function executeCbChains(
 
     const res = safeExecute(callback, result, target)
 
-    if (typeof res === 'undefined') {
-        return executeCbChains(target, isResolved, target['value'], chains.slice(1))
-    }
-
     if (res instanceof TKPromise) {
         res['cbChains'] = res['cbChains'].concat(target['cbChains'].slice(1))
-        return setTimeout(
-            () => executeCbChains(target, isResolved, target['value'], chains.slice(1)),
-            0,
-        )
+        res['cbFinally'] = target['cbFinally']
+        return
     }
 
     // new promise instance
     const p = new TKPromise(noop)
 
+    p['cbChains'] = target['cbChains'].slice(1)
+    p['cbFinally'] = target['cbFinally']
+
     if (res instanceof Error) {
         // combine callback chains
-        p['cbChains'] = target['cbChains'].slice(1)
-        return setTimeout(p['handleReject'].bind(p, res), 0)
+        return p['handleReject'](res)
     }
 
-    return setTimeout(p['handleResolve'].bind(p, res), 0)
+    return p['handleResolve'](res)
 }
 
 class TKPromise {
     private state: 'pendding' | 'settled' = 'pendding'
     private value: any
     private cbChains: CbChains = []
+    private cbFinally: OnFinally = noop
 
     private handleResolve(result?: any): void {
         if (this.state === 'settled') return
@@ -119,18 +126,18 @@ class TKPromise {
         const handlerResove = function (res: any) {
             if (done) return
             done = true
-            promises.forEach((p) => (p['state'] = 'settled'))
+            promises.forEach((pItem) => (pItem['state'] = 'settled'))
             p.handleResolve(res)
         }
 
         const handleReject = function (res: any) {
             if (done) return
             done = true
-            promises.forEach((p) => (p['state'] = 'settled'))
+            promises.forEach((pItem) => (pItem['state'] = 'settled'))
             p.handleReject(res)
         }
 
-        promises.forEach((p) => p.then(handlerResove, handleReject))
+        promises.forEach((pItem) => pItem.then(handlerResove, handleReject))
 
         return p
     }
@@ -148,10 +155,33 @@ class TKPromise {
 
         const handleReject = function (res: any) {
             p.handleReject(res)
-            promises.forEach((p) => p['state'] === 'settled')
+            promises.forEach((pItem) => pItem['state'] === 'settled')
         }
 
-        promises.forEach((p, idx) => p.then(handleResolve.bind(null, idx), handleReject))
+        promises.forEach((pItem, idx) =>
+            pItem.then(handleResolve.bind(undefined, idx), handleReject),
+        )
+
+        return p
+    }
+
+    static allSettled(promises: TKPromise[]) {
+        const values: any[] = []
+        const p = new TKPromise(noop)
+
+        const handleResolveReject = function (idx: number, res: any) {
+            values[idx] = res
+            if (values.length === promises.length) {
+                p.handleResolve(values)
+            }
+        }
+
+        promises.forEach((pItem, idx) =>
+            pItem.then(
+                handleResolveReject.bind(undefined, idx),
+                handleResolveReject.bind(undefined, idx),
+            ),
+        )
 
         return p
     }
@@ -174,6 +204,18 @@ class TKPromise {
         const cbMatch: CbMatch = [undefined, onRejected]
         this.cbChains.push(cbMatch)
         return this
+    }
+
+    public finally(onFinally: OnFinally): void {
+        if (typeof onFinally !== 'function') {
+            throw new TypeError('`onFinally` should be a function.')
+        }
+
+        // only register once
+        if (this.cbFinally !== noop) return
+
+        // assign `onFinally`
+        this.cbFinally = onFinally
     }
 }
 

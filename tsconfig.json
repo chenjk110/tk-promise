@@ -7,5 +7,7 @@
         "outDir": "dist",
         "lib": ["ESNext", "DOM"],
         "noImplicitAny": true,
-    }
+        "moduleResolution": "Node"
+    },
+    "include": ["./src/"]
 }

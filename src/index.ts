@@ -1,21 +1,23 @@
+'use strict'
+type AnyFunc = (...args: any[]) => any
 type OnFulfilled = (result?: any) => any
-type OnRejected = (result?: any) => any
+type OnRejected = (reason?: any) => any
 type OnFinally = (result?: any) => void
 type ExecutorFn = (resolve: OnFulfilled, reject: OnRejected) => void
-type CbMatch = Array<undefined | Function>
+type CbMatch = Array<undefined | AnyFunc>
 type CbChains = Array<CbMatch>
-
+type States = 'pending' | 'fulfilled' | 'rejected'
 
 /**
  * No Operation
  */
-const noop = () => { }
+const noop: AnyFunc = Object.freeze(() => (void 0))
 
 /**
  * next-tick
  * @param callback callbacks
  */
-function nextTick(callback: Function) {
+function nextTick(callback: AnyFunc) {
     /// next tick adapter
     return setTimeout(callback, 0)
 }
@@ -23,28 +25,27 @@ function nextTick(callback: Function) {
 /**
  * execute function via try-catch
  * @param fn target function to be executed
- * @param result the data that will be pass in
+ * @param payload the data that will be passed in
  * @param ctx executing context
  */
-function safeExecute(fn: Function, result: any, ctx: any) {
+function safeExecute(fn: AnyFunc, payload: any, ctx: any) {
     try {
-        return fn.call(ctx, result)
+        return fn.call(ctx, payload)
     } catch (err) {
         return err
     }
 }
-
 /**
  * exectue promise instance callbacks
  * @param target the promise instance
  * @param isResolved stand for resolved state
- * @param result the result of previous promise instance
+ * @param payload the result of previous promise instance
  * @param chains promise instance's callback chains that registed
  */
 function executeCbChains(
     target: TKPromise,
     isResolved: boolean,
-    result: any,
+    payload: any,
     chains: CbChains,
 ): any {
     // end of chains
@@ -59,68 +60,81 @@ function executeCbChains(
 
     const [onFulfilld, onRejected] = chains[0] || []
 
-    let callback
+    let callback = noop
 
     if (isResolved) {
         if (typeof onFulfilld === 'undefined') {
-            return nextTick(() => executeCbChains(target, isResolved, result, chains.slice(1)))
+            return nextTick(executeCbChains.bind(undefined, target, isResolved, payload, chains.slice(1)))
         }
         callback = onFulfilld
     } else {
         if (typeof onRejected === 'undefined') {
-            return nextTick(() => executeCbChains(target, isResolved, result, chains.slice(1)))
+            return nextTick(executeCbChains.bind(undefined, target, isResolved, payload, chains.slice(1)))
         }
         callback = onRejected
     }
 
-    const res = safeExecute(callback, result, target)
+    ///// executing callback and got result
+    let thenResult = safeExecute(callback, payload, undefined)
 
-    if (res instanceof TKPromise) {
-        res.cbChains = res.cbChains.concat(target.cbChains.slice(1))
-        res.cbFinally = target.cbFinally
+    if (thenResult instanceof TKPromise) {
+        // assign finally callback
+        thenResult.finally(target.cbFinally)
+
+        if (thenResult === target) {
+            const isResolved = false
+            const payload = new TypeError(`promise and value refer to the same object.`)
+            const cbChains = chains.slice(1)
+            return nextTick(executeCbChains.bind(undefined, thenResult, isResolved, payload, cbChains))
+        }
+
+        if (thenResult.state !== 'pending') {
+            const isResolved = thenResult.state === 'fulfilled'
+            const payload = thenResult.value
+            const cbChains = thenResult.cbChains.concat(chains.slice(1))
+            return nextTick(executeCbChains.bind(undefined, thenResult, isResolved, payload, cbChains))
+        }
+
+        return
+
+    } else if (thenResult == null) {
+        const instance = TKPromise.reject(new TypeError(`value '${thenResult}' is not thenable.`))
+        instance.cbChains = target.cbChains.slice(1)
+        instance.finally(target.cbFinally)
         return
     }
 
-    // new promise instance
-    const p = new TKPromise(noop)
-
-    p.cbChains = target.cbChains.slice(1)
-    p.cbFinally = target.cbFinally
-
-    if (res instanceof Error) {
-        // combine callback chains
-        return handleReject(res, p)
-    }
-
-    return handleResolve(res, p)
+    nextTick(executeCbChains.bind(undefined, target, isResolved, thenResult, chains.slice(1)))
 }
 
 function handleResolve(result: any, context: TKPromise): void {
-    if (context.state === 'settled') return
-    context.state = 'settled'
+    if (context.state !== 'pending') return
+    context.state = 'fulfilled'
     context.value = result
-    nextTick(() => executeCbChains(context, true, result, context.cbChains))
+    nextTick(executeCbChains.bind(undefined, context, true, result, context.cbChains.slice()))
 }
 
 function handleReject(result: any, context: TKPromise): void {
-    if (context.state === 'settled') return
-    context.state = 'settled'
+    if (context.state !== 'pending') return
+    context.state = 'rejected'
     context.value = result
-    nextTick(() => executeCbChains(context, false, result, context.cbChains))
+    nextTick(executeCbChains.bind(undefined, context, false, result, context.cbChains.slice()))
 }
 
 function noramlizeThenHandler(handler: any) {
-    return typeof handler === 'function' ? handler : undefined
+    if (typeof handler === 'function') return handler
+    if (handler == null) return undefined
+    return (v: any) => v
 }
 
-
 class TKPromise {
-    state: 'pendding' | 'settled' = 'pendding'
+    state: States = 'pending'
     value: any
     cbChains: CbChains = []
     cbFinally: OnFinally = noop
 
     constructor(executor: ExecutorFn) {
+
         if (!(this instanceof TKPromise)) {
             throw new Error('TKPromise should called via `new` operator.')
         }
@@ -131,80 +145,111 @@ class TKPromise {
             )
         }
 
-        executor((result) => handleResolve(result, this), (reason) => handleReject(reason, this))
+        let isSettled = false
+
+        executor((result) =>{
+            if (isSettled) return
+            isSettled = true
+            handleResolve(result, this)
+        }, (reason) => {
+            if (isSettled) return
+            isSettled = true
+            handleReject(reason, this)
+        })
     }
 
+    /**
+     * Promise.race() static method
+     * @param promises promise instance list
+     */
     static race(promises: TKPromise[]) {
         let done = false
-        const p = new TKPromise(noop)
+
+        const instance = new TKPromise(noop)
 
         const _handlerResove = function (res: any) {
             if (done) return
             done = true
-            promises.forEach((pItem) => (pItem.state = 'settled'))
-            handleResolve(res, p)
+            promises.forEach(p => (p.state = 'fulfilled'))
+            handleResolve(res, instance)
         }
 
         const _handleReject = function (res: any) {
             if (done) return
             done = true
-            promises.forEach((pItem) => (pItem.state = 'settled'))
-            handleReject(res, p)
+            promises.forEach(p => (p.state = 'rejected'))
+            handleReject(res, instance)
         }
 
-        promises.forEach((pItem) => pItem.then(_handlerResove, _handleReject))
+        promises.forEach(p => p.then(_handlerResove, _handleReject))
 
-        return p
+        return instance
     }
 
+    /**
+     * Promise.all() static method
+     * @param promises promise instance list
+     */
     static all(promises: TKPromise[]) {
-        const p = new TKPromise(noop)
+        const instance = new TKPromise(noop)
         const values: any[] = []
 
         const _handleResolve = function (idx: number, res: any) {
             values[idx] = res
             if (values.length === promises.length) {
-                handleResolve(values, p)
+                handleResolve(values, instance)
             }
         }
 
         const _handleReject = function (res: any) {
-            handleReject(res, p)
-            promises.forEach((pItem) => pItem.state === 'settled')
+            handleReject(res, instance)
+            promises.forEach(p => p.state = 'rejected')
         }
 
-        promises.forEach((pItem, idx) =>
-            pItem.then(_handleResolve.bind(undefined, idx), _handleReject),
+        promises.forEach((p, idx) =>
+            p.then(_handleResolve.bind(undefined, idx), _handleReject),
         )
 
-        return p
+        return instance
     }
 
+    /**
+     * Promise.allSettled() static method
+     * @param promises promise instance list
+     */
     static allSettled(promises: TKPromise[]) {
         const values: any[] = []
-        const p = new TKPromise(noop)
+        const instance = new TKPromise(noop)
 
         const handleResolveReject = function (idx: number, res: any) {
             values[idx] = res
             if (values.length === promises.length) {
-                handleResolve(values, p)
+                handleResolve(values, instance)
             }
         }
 
-        promises.forEach((pItem, idx) =>
-            pItem.then(
+        promises.forEach((p, idx) =>
+            p.then(
                 handleResolveReject.bind(undefined, idx),
                 handleResolveReject.bind(undefined, idx),
-            ),
+            )
         )
 
-        return p
+        return instance
     }
 
+    /**
+     * Promise.resolve() static method
+     * @param value fulfilled value
+     */
     static resolve(value?: any): TKPromise {
         return new TKPromise((resolve) => resolve(value))
     }
 
+    /**
+     * Promise.reject() static method
+     * @param value rejected value
+     */
     static reject(value?: any): TKPromise {
         return new TKPromise((_, reject) => reject(value))
     }

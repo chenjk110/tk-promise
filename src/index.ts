@@ -11,15 +11,40 @@ type States = 'pending' | 'fulfilled' | 'rejected'
 /**
  * No Operation
  */
-const noop: AnyFunc = Object.freeze(() => (void 0))
+const NOOP_FUNC: AnyFunc = Object.freeze(() => (void 0))
 
 /**
  * next-tick
  * @param callback callbacks
  */
 function nextTick(callback: AnyFunc) {
+    if (typeof queueMicrotask === 'function') {
+        return queueMicrotask(callback)
+    }
+    
+    if (typeof process != null && typeof process.nextTick === 'function') {
+        return process.nextTick(callback)
+    }
+
+    if (typeof MessageChannel === 'function') {
+        let { port1, port2 } = new MessageChannel()
+        port1.addEventListener('message', callback)
+        port2.postMessage('')
+        // @ts-ignore
+        port1 = null
+        // @ts-ignore
+        port2 = null
+        return
+    }
+
     /// next tick adapter
     return setTimeout(callback, 0)
+}
+
+class CapturedError extends Error {
+    constructor(public nativeError: Error) {
+        super()
+    }
 }
 
 /**
@@ -32,7 +57,7 @@ function safeExecute(fn: AnyFunc, payload: any, ctx: any) {
     try {
         return fn.call(ctx, payload)
     } catch (err) {
-        return err
+        return new CapturedError(err)
     }
 }
 /**
@@ -54,28 +79,28 @@ function executeCbChains(
         if (typeof target.cbFinally === 'function') {
             return target.cbFinally(target.value)
         }
-        // esle return directly
+        // else return directly
         return
     }
 
     const [onFulfilld, onRejected] = chains[0] || []
 
-    let callback = noop
+    let callback
 
     if (isResolved) {
-        if (typeof onFulfilld === 'undefined') {
-            return nextTick(executeCbChains.bind(undefined, target, isResolved, payload, chains.slice(1)))
+        if (typeof onFulfilld !== 'function') {
+            return executeCbChains(target, true, payload, chains.slice(1))
         }
         callback = onFulfilld
     } else {
-        if (typeof onRejected === 'undefined') {
-            return nextTick(executeCbChains.bind(undefined, target, isResolved, payload, chains.slice(1)))
+        if (typeof onRejected !== 'function') {
+            return executeCbChains(target, false, payload, chains.slice(1))
         }
         callback = onRejected
     }
 
     ///// executing callback and got result
-    let thenResult = safeExecute(callback, payload, undefined)
+    let thenResult = safeExecute(callback, payload, null)
 
     if (thenResult instanceof TKPromise) {
         // assign finally callback
@@ -84,54 +109,53 @@ function executeCbChains(
         if (thenResult === target) {
             const isResolved = false
             const payload = new TypeError(`promise and value refer to the same object.`)
-            const cbChains = chains.slice(1)
-            return nextTick(executeCbChains.bind(undefined, thenResult, isResolved, payload, cbChains))
+            target.cbChains.shift()
+            return executeCbChains(target, isResolved, payload, target.cbChains)
         }
 
         if (thenResult.state !== 'pending') {
             const isResolved = thenResult.state === 'fulfilled'
             const payload = thenResult.value
             const cbChains = thenResult.cbChains.concat(chains.slice(1))
-            return nextTick(executeCbChains.bind(undefined, thenResult, isResolved, payload, cbChains))
+            return executeCbChains(thenResult, isResolved, payload, cbChains)
         }
 
         return
 
-    } else if (thenResult == null) {
-        const instance = TKPromise.reject(new TypeError(`value '${thenResult}' is not thenable.`))
+    } else if (thenResult instanceof CapturedError) {
+        const instance = TKPromise.reject(thenResult)
         instance.cbChains = target.cbChains.slice(1)
         instance.finally(target.cbFinally)
         return
     }
-
-    nextTick(executeCbChains.bind(undefined, target, isResolved, thenResult, chains.slice(1)))
+    target.cbChains.shift()
+    executeCbChains(target, isResolved, thenResult, target.cbChains)
 }
 
 function handleResolve(result: any, context: TKPromise): void {
     if (context.state !== 'pending') return
     context.state = 'fulfilled'
     context.value = result
-    nextTick(executeCbChains.bind(undefined, context, true, result, context.cbChains.slice()))
+    nextTick(executeCbChains.bind(null, context, true, result, context.cbChains.slice()))
 }
 
 function handleReject(result: any, context: TKPromise): void {
     if (context.state !== 'pending') return
     context.state = 'rejected'
     context.value = result
-    nextTick(executeCbChains.bind(undefined, context, false, result, context.cbChains.slice()))
+    nextTick(executeCbChains.bind(null, context, false, result, context.cbChains.slice()))
 }
 
 function noramlizeThenHandler(handler: any) {
     if (typeof handler === 'function') return handler
-    if (handler == null) return undefined
-    return (v: any) => v
+    return undefined
 }
 
 class TKPromise {
     state: States = 'pending'
     value: any
     cbChains: CbChains = []
-    cbFinally: OnFinally = noop
+    cbFinally: OnFinally = NOOP_FUNC
 
     constructor(executor: ExecutorFn) {
 
@@ -165,7 +189,7 @@ class TKPromise {
     static race(promises: TKPromise[]) {
         let done = false
 
-        const instance = new TKPromise(noop)
+        const instance = new TKPromise(NOOP_FUNC)
 
         const _handlerResove = function (res: any) {
             if (done) return
@@ -191,7 +215,7 @@ class TKPromise {
      * @param promises promise instance list
      */
     static all(promises: TKPromise[]) {
-        const instance = new TKPromise(noop)
+        const instance = new TKPromise(NOOP_FUNC)
         const values: any[] = []
 
         const _handleResolve = function (idx: number, res: any) {
@@ -207,7 +231,7 @@ class TKPromise {
         }
 
         promises.forEach((p, idx) =>
-            p.then(_handleResolve.bind(undefined, idx), _handleReject),
+            p.then(_handleResolve.bind(null, idx), _handleReject),
         )
 
         return instance
@@ -219,7 +243,7 @@ class TKPromise {
      */
     static allSettled(promises: TKPromise[]) {
         const values: any[] = []
-        const instance = new TKPromise(noop)
+        const instance = new TKPromise(NOOP_FUNC)
 
         const handleResolveReject = function (idx: number, res: any) {
             values[idx] = res
@@ -230,8 +254,8 @@ class TKPromise {
 
         promises.forEach((p, idx) =>
             p.then(
-                handleResolveReject.bind(undefined, idx),
-                handleResolveReject.bind(undefined, idx),
+                handleResolveReject.bind(null, idx),
+                handleResolveReject.bind(null, idx),
             )
         )
 
@@ -243,7 +267,9 @@ class TKPromise {
      * @param value fulfilled value
      */
     static resolve(value?: any): TKPromise {
-        return new TKPromise((resolve) => resolve(value))
+        const instance = new TKPromise(NOOP_FUNC)
+        handleResolve(value, instance)
+        return instance
     }
 
     /**
@@ -251,7 +277,9 @@ class TKPromise {
      * @param value rejected value
      */
     static reject(value?: any): TKPromise {
-        return new TKPromise((_, reject) => reject(value))
+        const instance = new TKPromise(NOOP_FUNC)
+        handleReject(value, instance)
+        return instance
     }
 
     public then(onFulfilld?: OnFulfilled, onRejected?: OnRejected): TKPromise {
@@ -276,7 +304,7 @@ class TKPromise {
         }
 
         // only register once
-        if (this.cbFinally !== noop) return
+        if (this.cbFinally !== NOOP_FUNC) return
 
         // assign `onFinally`
         this.cbFinally = onFinally

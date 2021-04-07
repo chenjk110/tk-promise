@@ -123,7 +123,7 @@ function executeCbChains(
         return
 
     } else if (thenResult instanceof CapturedError) {
-        const instance = TKPromise.reject(thenResult)
+        const instance = TKPromise.reject(thenResult.nativeError)
         instance.cbChains = target.cbChains.slice(1)
         instance.finally(target.cbFinally)
         return

@@ -21,7 +21,7 @@ function nextTick(callback: AnyFunc) {
     if (typeof queueMicrotask === 'function') {
         return queueMicrotask(callback)
     }
-    
+
     if (typeof process != null && typeof process.nextTick === 'function') {
         return process.nextTick(callback)
     }
@@ -147,7 +147,17 @@ function handleReject(result: any, context: TKPromise): void {
 }
 
 function noramlizeThenHandler(handler: any) {
-    if (typeof handler === 'function') return handler
+    if (typeof handler === 'function') {
+        let result: any
+        let isCalled = false
+        const _handler: AnyFunc = function (this: any, ...args: any) {
+            if (isCalled) return result
+            result = handler.call(this, ...args)
+            isCalled = true
+            return result
+        }
+        return _handler
+    }
     return undefined
 }
 
@@ -171,7 +181,7 @@ class TKPromise {
 
         let isSettled = false
 
-        executor((result) =>{
+        executor((result) => {
             if (isSettled) return
             isSettled = true
             handleResolve(result, this)
@@ -291,7 +301,7 @@ class TKPromise {
         return this
     }
 
-    public catch(onRejected: OnRejected): TKPromise {
+    public catch(onRejected?: OnRejected): TKPromise {
         onRejected = noramlizeThenHandler(onRejected)
         const cbMatch: CbMatch = [undefined, onRejected]
         this.cbChains.push(cbMatch)
